@@ -50,6 +50,13 @@ uv run python scripts/check_env.py
 export EDGEINFER_MODEL_PATH=/path/to/Qwen3-8B
 ```
 
+下载模型权重方法
+
+```bash
+uv run python scripts/download_model.py qwen3-1.7b
+uv run python scripts/download_model.py qwen3-8b
+```
+
 推荐的目录结构：
 
 ```text
