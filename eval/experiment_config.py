@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -8,7 +9,7 @@ class ExperimentConfig:
     model_dir: str
     device: str
     dtype: str
-    offload_mode: str
+    offload_mode: Literal["resident", "naive", "prefetch"]
     gpu_layer_budget: int | None
     batch_size: int
     prompt_length: int
