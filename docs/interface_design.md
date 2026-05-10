@@ -89,13 +89,14 @@ class ModelConfig:
 
 ```python
 from dataclasses import dataclass
+from typing import Literal
 
 @dataclass(frozen=True)
 class ExperimentConfig:
     model_dir: str
     device: str
     dtype: str
-    offload_mode: str
+    offload_mode: Literal["resident", "naive", "prefetch"]
     gpu_layer_budget: int | None
     batch_size: int
     prompt_length: int
@@ -400,6 +401,29 @@ class Qwen3Model:
 - `Qwen3Model` 不读取模型目录。
 - `Qwen3Model` 只组织模型结构与计算。
 
+### RotaryEmbedding
+
+放在 `model/rope.py`。
+
+接口草案：
+
+```python
+class RotaryEmbedding:
+    def __init__(self, config: ModelConfig, device: torch.device):
+        self.config = config
+        self.device = device
+
+    def get_cos_sin(
+        self,
+        position_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ...
+```
+
+固定约束：
+- 第一版只定义接口契约，不实现 RoPE 数学计算。
+- 不保留函数式 `apply_rope` 兼容接口。
+
 ## 13. KVCache
 
 放在 `model/kv_cache.py`。
@@ -553,6 +577,30 @@ class BenchmarkHarness:
 - Runtime 记录 compute 与生成阶段。
 - 输出指标包括：TTFT、prefill latency、decode tokens/s、peak memory、per-layer H2D copy time、per-layer compute time。
 
+## 15.5 MemoryTracker
+
+放在 `runtime/memory.py`。
+
+接口草案：
+
+```python
+class MemoryTracker:
+    def reset_peak(self) -> None:
+        ...
+
+    def get_peak_memory_bytes(self) -> int:
+        ...
+
+    def get_allocated_bytes(self) -> int:
+        ...
+
+def bytes_to_mib(num_bytes: int) -> float:
+    ...
+```
+
+约束说明：
+- 第一版只定义内存查询契约，不实现 torch.cuda 查询逻辑。
+
 ## 16. Provider 工厂函数
 
 接口草案：
@@ -560,7 +608,7 @@ class BenchmarkHarness:
 ```python
 def create_weight_provider(
     model_bundle: ModelBundle,
-    mode: str,
+    mode: Literal["resident", "naive", "prefetch"],
     device: torch.device,
     dtype: torch.dtype,
     gpu_layer_budget: int | None,
@@ -599,6 +647,31 @@ runtime = GenerationRuntime(
 
 output_ids = runtime.generate(input_ids, max_new_tokens)
 ```
+
+## 17.5 Correctness 接口
+
+放在 `eval/correctness.py`。
+
+接口草案：
+
+```python
+@dataclass(frozen=True)
+class CorrectnessResult:
+    passed: bool
+    max_abs_error: float | None = None
+    max_rel_error: float | None = None
+    mismatch_count: int | None = None
+    message: str = ""
+
+def compare_logits(actual: torch.Tensor, expected: torch.Tensor) -> CorrectnessResult:
+    ...
+
+def compare_tokens(actual: torch.Tensor, expected: torch.Tensor) -> CorrectnessResult:
+    ...
+```
+
+约束说明：
+- 第一版只定义比较接口，不实现真实比较逻辑。
 
 ## 18. 并行开发边界
 
