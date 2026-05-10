@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 @dataclass
 class Qwen3Config:
@@ -12,7 +13,9 @@ class Qwen3Config:
 @dataclass
 class ExperimentConfig:
     """由成员 B 控制的实验评测配置"""
-    model_path: str = "/home/user/ondevice-models/Qwen3-8B"
+    model_path: str = field(
+        default_factory=lambda: os.environ.get("EDGEINFER_MODEL_PATH", "")
+    )
     batch_size: int = 1
     prompt_length: int = 512
     generate_length: int = 128
