@@ -3,19 +3,19 @@ from __future__ import annotations
 import torch
 
 from runtime.weight_provider import WeightProvider
-from weights.loader import WeightLoader
+from weights.model_bundle import ModelBundle
 from weights.weight_spec import GlobalWeights, LayerWeights
 
 
 class PrefetchOffloadWeightProvider(WeightProvider):
     def __init__(
         self,
-        loader: WeightLoader,
+        model_bundle: ModelBundle,
         device: torch.device,
         dtype: torch.dtype,
         gpu_layer_budget: int | None,
     ):
-        self.loader = loader
+        self.model_bundle = model_bundle
         self.device = device
         self.dtype = dtype
         self.gpu_layer_budget = gpu_layer_budget

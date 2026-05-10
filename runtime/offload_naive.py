@@ -3,18 +3,18 @@ from __future__ import annotations
 import torch
 
 from runtime.weight_provider import WeightProvider
-from weights.loader import WeightLoader
+from weights.model_bundle import ModelBundle
 from weights.weight_spec import GlobalWeights, LayerWeights
 
 
 class NaiveOffloadWeightProvider(WeightProvider):
     def __init__(
         self,
-        loader: WeightLoader,
+        model_bundle: ModelBundle,
         device: torch.device,
         dtype: torch.dtype,
     ):
-        self.loader = loader
+        self.model_bundle = model_bundle
         self.device = device
         self.dtype = dtype
 
