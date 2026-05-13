@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from model.kv_cache import KVCache
 from model.layers import Qwen3DecoderLayer
@@ -14,7 +15,7 @@ class Qwen3Model:
         self.layers = [Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)]
 
     def embed(self, input_ids: torch.Tensor, global_weights: GlobalWeights) -> torch.Tensor:
-        raise NotImplementedError
+        return F.embedding(input_ids, global_weights.embed_tokens)
 
     def forward_layer(
         self,
@@ -33,4 +34,7 @@ class Qwen3Model:
         )
 
     def final_logits(self, hidden_states: torch.Tensor, global_weights: GlobalWeights) -> torch.Tensor:
-        raise NotImplementedError
+        variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
+        normed = hidden_states * torch.rsqrt(variance + self.config.rms_norm_eps)
+        normed = normed * global_weights.final_norm
+        return F.linear(normed, global_weights.lm_head)
