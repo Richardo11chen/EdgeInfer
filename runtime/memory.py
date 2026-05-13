@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import torch
+
 
 class MemoryTracker:
     def reset_peak(self) -> None:
-        raise NotImplementedError
+        torch.cuda.reset_peak_memory_stats()
 
     def get_peak_memory_bytes(self) -> int:
-        raise NotImplementedError
+        return torch.cuda.max_memory_allocated()
 
     def get_allocated_bytes(self) -> int:
-        raise NotImplementedError
+        return torch.cuda.memory_allocated()
 
 
 def bytes_to_mib(num_bytes: int) -> float:
