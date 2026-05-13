@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model.kv_cache import KVCache
 from model.layers import Qwen3DecoderLayer
@@ -39,8 +44,14 @@ def make_layer_weights(config: ModelConfig, layer_id: int = 0) -> LayerWeights:
         tensors={
             "input_layernorm.weight": torch.ones(hs, dtype=torch.float32),
             "self_attn.q_proj.weight": torch.randn(hs, hs, dtype=torch.float32) * 0.02,
-            "self_attn.k_proj.weight": torch.randn(config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32) * 0.02,
-            "self_attn.v_proj.weight": torch.randn(config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32) * 0.02,
+            "self_attn.k_proj.weight": torch.randn(
+                config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32
+            )
+            * 0.02,
+            "self_attn.v_proj.weight": torch.randn(
+                config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32
+            )
+            * 0.02,
             "self_attn.o_proj.weight": torch.randn(hs, hs, dtype=torch.float32) * 0.02,
             "post_attention_layernorm.weight": torch.ones(hs, dtype=torch.float32),
             "mlp.gate_proj.weight": torch.randn(isz, hs, dtype=torch.float32) * 0.02,
@@ -69,7 +80,6 @@ def test_rotary_embedding_get_cos_sin_broadcast_shape() -> None:
     assert sin.shape == (2, 1, 8, config.head_dim)
 
 
-
 def test_kv_cache_append_get_shape() -> None:
     config = make_config()
     cache = KVCache(
@@ -87,7 +97,6 @@ def test_kv_cache_append_get_shape() -> None:
     out_k, out_v = cache.get(layer_id=0, end_pos=8)
     assert out_k.shape == key.shape
     assert out_v.shape == value.shape
-
 
 
 def test_decoder_layer_forward_shapes_gqa_seq1_seq8_and_no_nan() -> None:
@@ -114,7 +123,6 @@ def test_decoder_layer_forward_shapes_gqa_seq1_seq8_and_no_nan() -> None:
     out_8 = layer.forward(hidden_8, pos_8, weights, cache, layer_id=1)
     assert out_8.shape == hidden_8.shape
     assert not torch.isnan(out_8).any()
-
 
 
 def test_qwen3_model_embed_and_final_logits_shape() -> None:
