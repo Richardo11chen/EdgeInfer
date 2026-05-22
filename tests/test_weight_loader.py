@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 import torch
+from safetensors.torch import save_file as safe_save
 
 from weights.loader import WeightLoader
+from weights.model_config import ModelConfig
 from weights.weight_spec import GLOBAL_WEIGHT_KEYS, LAYER_WEIGHT_KEYS, GlobalWeights, LayerWeights
 
 
@@ -87,3 +92,117 @@ class TestWeightLoader:
                 all_expected.append(f"model.layers.{i}.{key}")
         for name in all_expected:
             assert name in loader._name_to_file, f"Missing key: {name}"
+
+    def test_tied_embeddings_without_lm_head_weight(self, tmp_path: Path):
+        config = ModelConfig(
+            model_type="qwen3",
+            vocab_size=16,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=4,
+            rms_norm_eps=1e-6,
+            rope_theta=10000.0,
+            max_position_embeddings=64,
+            bos_token_id=None,
+            eos_token_id=None,
+            pad_token_id=None,
+            torch_dtype="float32",
+            tie_word_embeddings=True,
+        )
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": config.model_type,
+                    "vocab_size": config.vocab_size,
+                    "hidden_size": config.hidden_size,
+                    "intermediate_size": config.intermediate_size,
+                    "num_hidden_layers": config.num_hidden_layers,
+                    "num_attention_heads": config.num_attention_heads,
+                    "num_key_value_heads": config.num_key_value_heads,
+                    "head_dim": config.head_dim,
+                    "rms_norm_eps": config.rms_norm_eps,
+                    "rope_theta": config.rope_theta,
+                    "max_position_embeddings": config.max_position_embeddings,
+                    "tie_word_embeddings": config.tie_word_embeddings,
+                }
+            ),
+            encoding="utf-8",
+        )
+        tensors = {
+            "model.embed_tokens.weight": torch.randn(config.vocab_size, config.hidden_size),
+            "model.norm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.input_layernorm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.k_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.v_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.o_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.post_attention_layernorm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.mlp.gate_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+            "model.layers.0.mlp.up_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+            "model.layers.0.mlp.down_proj.weight": torch.randn(config.hidden_size, config.intermediate_size),
+        }
+        safe_save(tensors, str(tmp_path / "model.safetensors"))
+
+        loader = WeightLoader(str(tmp_path), config)
+        gw = loader.load_global_weights()
+        assert gw.lm_head.data_ptr() == gw.embed_tokens.data_ptr()
+
+    def test_untied_embeddings_require_lm_head_weight(self, tmp_path: Path):
+        config = ModelConfig(
+            model_type="qwen3",
+            vocab_size=16,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=4,
+            rms_norm_eps=1e-6,
+            rope_theta=10000.0,
+            max_position_embeddings=64,
+            bos_token_id=None,
+            eos_token_id=None,
+            pad_token_id=None,
+            torch_dtype="float32",
+            tie_word_embeddings=False,
+        )
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": config.model_type,
+                    "vocab_size": config.vocab_size,
+                    "hidden_size": config.hidden_size,
+                    "intermediate_size": config.intermediate_size,
+                    "num_hidden_layers": config.num_hidden_layers,
+                    "num_attention_heads": config.num_attention_heads,
+                    "num_key_value_heads": config.num_key_value_heads,
+                    "head_dim": config.head_dim,
+                    "rms_norm_eps": config.rms_norm_eps,
+                    "rope_theta": config.rope_theta,
+                    "max_position_embeddings": config.max_position_embeddings,
+                    "tie_word_embeddings": config.tie_word_embeddings,
+                }
+            ),
+            encoding="utf-8",
+        )
+        tensors = {
+            "model.embed_tokens.weight": torch.randn(config.vocab_size, config.hidden_size),
+            "model.norm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.input_layernorm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.k_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.v_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.o_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.post_attention_layernorm.weight": torch.randn(config.hidden_size),
+            "model.layers.0.mlp.gate_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+            "model.layers.0.mlp.up_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+            "model.layers.0.mlp.down_proj.weight": torch.randn(config.hidden_size, config.intermediate_size),
+        }
+        safe_save(tensors, str(tmp_path / "model.safetensors"))
+
+        loader = WeightLoader(str(tmp_path), config)
+        with pytest.raises(KeyError, match="lm_head.weight"):
+            loader.load_global_weights()

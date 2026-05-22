@@ -18,10 +18,15 @@ class NaiveOffloadWeightProvider:
         self.dtype = dtype
 
         cpu_global = model_bundle.loader.load_global_weights()
+        embed_tokens = cpu_global.embed_tokens.to(device=device, dtype=dtype)
+        if cpu_global.lm_head.data_ptr() == cpu_global.embed_tokens.data_ptr():
+            lm_head = embed_tokens
+        else:
+            lm_head = cpu_global.lm_head.to(device=device, dtype=dtype)
         self._global_weights = GlobalWeights(
-            embed_tokens=cpu_global.embed_tokens.to(device=device, dtype=dtype),
+            embed_tokens=embed_tokens,
             final_norm=cpu_global.final_norm.to(device=device, dtype=dtype),
-            lm_head=cpu_global.lm_head.to(device=device, dtype=dtype),
+            lm_head=lm_head,
         )
 
         self._cpu_layer_cache: dict[int, LayerWeights] = {}
