@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import sys
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -25,6 +26,8 @@ class CorrectnessResult:
 def compare_logits(
     actual: torch.Tensor,
     expected: torch.Tensor,
+    abs_tol: float,
+    rel_tol: float,
 ) -> CorrectnessResult:
     if actual.shape != expected.shape:
         return CorrectnessResult(False, message=f"shape mismatch: {tuple(actual.shape)} vs {tuple(expected.shape)}")
@@ -37,7 +40,7 @@ def compare_logits(
     max_rel_error = float(rel_diff.max().item())
 
     return CorrectnessResult(
-        passed=True,
+        passed=(max_abs_error <= abs_tol) and (max_rel_error <= rel_tol),
         max_abs_error=max_abs_error,
         max_rel_error=max_rel_error,
         message="ok",
@@ -89,6 +92,8 @@ def run_alignment(
     max_new_tokens: int,
     device: str,
     dtype: str,
+    abs_tol: float,
+    rel_tol: float,
 ) -> None:
     torch_device = torch.device(device)
     torch_dtype = _parse_dtype(dtype)
@@ -119,16 +124,19 @@ def run_alignment(
         hf_tokens = hf_model.generate(input_ids=input_ids, max_new_tokens=max_new_tokens, do_sample=False)
         rt_tokens = runtime.generate(input_ids=input_ids, max_new_tokens=max_new_tokens)
 
-    logits_result = compare_logits(rt_logits, hf_logits)
+    logits_result = compare_logits(rt_logits, hf_logits, abs_tol=abs_tol, rel_tol=rel_tol)
     tokens_result = compare_tokens(rt_tokens, hf_tokens)
 
     print(
         "[logits] "
         f"passed={logits_result.passed} "
         f"max_abs_error={logits_result.max_abs_error} "
-        f"max_rel_error={logits_result.max_rel_error}"
+        f"max_rel_error={logits_result.max_rel_error} "
+        f"abs_tol={abs_tol} rel_tol={rel_tol}"
     )
     print(f"[tokens] passed={tokens_result.passed} mismatch_count={tokens_result.mismatch_count}")
+    if not logits_result.passed or not tokens_result.passed:
+        sys.exit(1)
 
 
 def main() -> None:
@@ -138,6 +146,8 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", default="float32", choices=["float16", "bfloat16", "float32"])
+    parser.add_argument("--abs-tol", type=float, default=1e-2)
+    parser.add_argument("--rel-tol", type=float, default=1e-2)
     args = parser.parse_args()
 
     run_alignment(
@@ -146,6 +156,8 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         device=args.device,
         dtype=args.dtype,
+        abs_tol=args.abs_tol,
+        rel_tol=args.rel_tol,
     )
 
 
