@@ -40,11 +40,14 @@ class TestWeightLoader:
         assert lw.layer_id == 0
         d = model_config.hidden_size
         d_i = model_config.intermediate_size
+        d_kv = model_config.num_key_value_heads * model_config.head_dim
 
         assert lw.tensors["input_layernorm.weight"].shape == (d,)
         assert lw.tensors["self_attn.q_proj.weight"].shape == (d, d)
-        assert lw.tensors["self_attn.k_proj.weight"].shape == (d, d)
-        assert lw.tensors["self_attn.v_proj.weight"].shape == (d, d)
+        assert lw.tensors["self_attn.k_proj.weight"].shape == (d_kv, d)
+        assert lw.tensors["self_attn.q_norm.weight"].shape == (model_config.head_dim,)
+        assert lw.tensors["self_attn.k_norm.weight"].shape == (model_config.head_dim,)
+        assert lw.tensors["self_attn.v_proj.weight"].shape == (d_kv, d)
         assert lw.tensors["self_attn.o_proj.weight"].shape == (d, d)
         assert lw.tensors["post_attention_layernorm.weight"].shape == (d,)
         assert lw.tensors["mlp.gate_proj.weight"].shape == (d_i, d)
@@ -137,6 +140,8 @@ class TestWeightLoader:
             "model.layers.0.input_layernorm.weight": torch.randn(config.hidden_size),
             "model.layers.0.self_attn.q_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.self_attn.k_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.q_norm.weight": torch.randn(config.head_dim),
+            "model.layers.0.self_attn.k_norm.weight": torch.randn(config.head_dim),
             "model.layers.0.self_attn.v_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.self_attn.o_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.post_attention_layernorm.weight": torch.randn(config.hidden_size),
@@ -194,6 +199,8 @@ class TestWeightLoader:
             "model.layers.0.input_layernorm.weight": torch.randn(config.hidden_size),
             "model.layers.0.self_attn.q_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.self_attn.k_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+            "model.layers.0.self_attn.q_norm.weight": torch.randn(config.head_dim),
+            "model.layers.0.self_attn.k_norm.weight": torch.randn(config.head_dim),
             "model.layers.0.self_attn.v_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.self_attn.o_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
             "model.layers.0.post_attention_layernorm.weight": torch.randn(config.hidden_size),

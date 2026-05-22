@@ -33,6 +33,8 @@ def test_real_qwen3_1_7b_weight_loading_smoke() -> None:
         assert layer.get("input_layernorm.weight").shape == (config.hidden_size,)
         assert layer.get("self_attn.q_proj.weight").shape == expected_q
         assert layer.get("self_attn.k_proj.weight").shape == expected_kv
+        assert layer.get("self_attn.q_norm.weight").shape == (config.head_dim,)
+        assert layer.get("self_attn.k_norm.weight").shape == (config.head_dim,)
         assert layer.get("self_attn.v_proj.weight").shape == expected_kv
         assert layer.get("self_attn.o_proj.weight").shape == expected_o
         assert layer.get("post_attention_layernorm.weight").shape == (config.hidden_size,)

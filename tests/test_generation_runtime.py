@@ -55,6 +55,8 @@ class _FakeLoader:
                     self.config.num_key_value_heads * self.config.head_dim, hs, dtype=torch.float32
                 )
                 * 0.02,
+                "self_attn.q_norm.weight": torch.ones(self.config.head_dim, dtype=torch.float32),
+                "self_attn.k_norm.weight": torch.ones(self.config.head_dim, dtype=torch.float32),
                 "self_attn.v_proj.weight": torch.randn(
                     self.config.num_key_value_heads * self.config.head_dim, hs, dtype=torch.float32
                 )

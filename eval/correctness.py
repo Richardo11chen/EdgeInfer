@@ -86,6 +86,31 @@ def _build_runtime(model_dir: str, device: torch.device, dtype: torch.dtype) -> 
     return GenerationRuntime(model=model, provider=provider, config=bundle.config)
 
 
+def _hf_fixed_greedy_generate(
+    hf_model: AutoModelForCausalLM,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+) -> torch.Tensor:
+    if max_new_tokens == 0:
+        return input_ids
+
+    generated = input_ids
+    outputs = hf_model(input_ids=input_ids, use_cache=True)
+    logits = outputs.logits
+    past_key_values = outputs.past_key_values
+
+    for step in range(max_new_tokens):
+        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        generated = torch.cat([generated, next_token], dim=1)
+        if step == max_new_tokens - 1:
+            break
+        outputs = hf_model(input_ids=next_token, past_key_values=past_key_values, use_cache=True)
+        logits = outputs.logits
+        past_key_values = outputs.past_key_values
+
+    return generated
+
+
 def run_alignment(
     model_dir: str,
     prompt: str,
@@ -121,7 +146,7 @@ def run_alignment(
     with torch.no_grad():
         hf_logits = hf_model(input_ids=input_ids).logits
         rt_logits = runtime.prefill(input_ids, kv_cache)
-        hf_tokens = hf_model.generate(input_ids=input_ids, max_new_tokens=max_new_tokens, do_sample=False)
+        hf_tokens = _hf_fixed_greedy_generate(hf_model, input_ids, max_new_tokens)
         rt_tokens = runtime.generate(input_ids=input_ids, max_new_tokens=max_new_tokens)
 
     logits_result = compare_logits(rt_logits, hf_logits, abs_tol=abs_tol, rel_tol=rel_tol)

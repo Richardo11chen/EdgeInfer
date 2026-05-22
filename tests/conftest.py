@@ -42,8 +42,10 @@ def _make_layer_hf_tensors(layer_id: int, config: ModelConfig) -> dict[str, torc
     tensors = {
         f"model.layers.{layer_id}.input_layernorm.weight": torch.randn(d),
         f"model.layers.{layer_id}.self_attn.q_proj.weight": torch.randn(d, d),
-        f"model.layers.{layer_id}.self_attn.k_proj.weight": torch.randn(d, d),
-        f"model.layers.{layer_id}.self_attn.v_proj.weight": torch.randn(d, d),
+        f"model.layers.{layer_id}.self_attn.k_proj.weight": torch.randn(config.num_key_value_heads * config.head_dim, d),
+        f"model.layers.{layer_id}.self_attn.q_norm.weight": torch.randn(config.head_dim),
+        f"model.layers.{layer_id}.self_attn.k_norm.weight": torch.randn(config.head_dim),
+        f"model.layers.{layer_id}.self_attn.v_proj.weight": torch.randn(config.num_key_value_heads * config.head_dim, d),
         f"model.layers.{layer_id}.self_attn.o_proj.weight": torch.randn(d, d),
         f"model.layers.{layer_id}.post_attention_layernorm.weight": torch.randn(d),
         f"model.layers.{layer_id}.mlp.gate_proj.weight": torch.randn(d_i, d),
