@@ -34,7 +34,9 @@ class Qwen3Model:
         )
 
     def final_logits(self, hidden_states: torch.Tensor, global_weights: GlobalWeights) -> torch.Tensor:
-        variance = hidden_states.pow(2).mean(dim=-1, keepdim=True)
-        normed = hidden_states * torch.rsqrt(variance + self.config.rms_norm_eps)
-        normed = normed * global_weights.final_norm
+        input_dtype = hidden_states.dtype
+        hidden_states_fp32 = hidden_states.float()
+        variance = hidden_states_fp32.pow(2).mean(dim=-1, keepdim=True)
+        normed = hidden_states_fp32 * torch.rsqrt(variance + self.config.rms_norm_eps)
+        normed = normed.to(dtype=input_dtype) * global_weights.final_norm.to(dtype=input_dtype)
         return F.linear(normed, global_weights.lm_head)
