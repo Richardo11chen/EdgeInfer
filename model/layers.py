@@ -86,9 +86,8 @@ class Qwen3DecoderLayer:
         query_pos = position_ids.to(device=attn_scores.device, dtype=torch.long).unsqueeze(-1)
         key_pos = torch.arange(end_pos, device=attn_scores.device, dtype=torch.long).view(1, 1, 1, -1)
         causal_mask = key_pos <= query_pos.unsqueeze(1)
-        attn_scores = attn_scores.masked_fill(~causal_mask, torch.finfo(attn_scores.dtype).min)
-
-        attn_probs = torch.softmax(attn_scores, dim=-1)
+        attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
+        attn_probs = torch.softmax(attn_scores.float(), dim=-1).to(dtype=attn_scores.dtype)
         attn_output = torch.matmul(attn_probs, all_v)
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, -1)
 
