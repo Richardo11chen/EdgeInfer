@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from weights.model_bundle import ModelBundle
 from weights.weight_spec import GlobalWeights, LayerWeights
+
+if TYPE_CHECKING:
+    from eval.benchmark import BenchmarkHarness
 
 
 class NaiveOffloadWeightProvider:
@@ -12,10 +17,12 @@ class NaiveOffloadWeightProvider:
         model_bundle: ModelBundle,
         device: torch.device,
         dtype: torch.dtype,
+        benchmark: BenchmarkHarness | None = None,
     ):
         self.model_bundle = model_bundle
         self.device = device
         self.dtype = dtype
+        self.benchmark = benchmark
 
         cpu_global = model_bundle.loader.load_global_weights()
         self._global_weights = GlobalWeights(
@@ -34,6 +41,9 @@ class NaiveOffloadWeightProvider:
         return None
 
     def synchronize_layer(self, layer_id: int) -> None:
+        if self.benchmark is not None:
+            self.benchmark.on_layer_copy_start(layer_id)
+
         if layer_id not in self._cpu_layer_cache:
             lw = self.model_bundle.loader.load_layer_weights(layer_id)
             self._cpu_layer_cache[layer_id] = lw
@@ -47,6 +57,9 @@ class NaiveOffloadWeightProvider:
         self._gpu_layer_cache[layer_id] = LayerWeights(
             layer_id=layer_id, tensors=gpu_tensors
         )
+
+        if self.benchmark is not None:
+            self.benchmark.on_layer_copy_end(layer_id)
 
     def get_layer_weights(self, layer_id: int) -> LayerWeights:
         return self._gpu_layer_cache[layer_id]
