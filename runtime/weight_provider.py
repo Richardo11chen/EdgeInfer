@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import torch
 
@@ -8,6 +8,9 @@ from runtime.offload_naive import NaiveOffloadWeightProvider
 from runtime.offload_prefetch import PrefetchOffloadWeightProvider
 from weights.model_bundle import ModelBundle
 from weights.weight_spec import GlobalWeights, LayerWeights
+
+if TYPE_CHECKING:
+    from eval.benchmark import BenchmarkHarness
 
 
 class WeightProvider(Protocol):
@@ -88,6 +91,7 @@ def create_weight_provider(
     device: torch.device,
     dtype: torch.dtype,
     gpu_layer_budget: int | None,
+    benchmark: BenchmarkHarness | None = None,
 ) -> WeightProvider:
     if mode == "resident":
         return ResidentWeightProvider(
@@ -100,6 +104,7 @@ def create_weight_provider(
             model_bundle=model_bundle,
             device=device,
             dtype=dtype,
+            benchmark=benchmark,
         )
     elif mode == "prefetch":
         return PrefetchOffloadWeightProvider(
@@ -107,6 +112,7 @@ def create_weight_provider(
             device=device,
             dtype=dtype,
             gpu_layer_budget=gpu_layer_budget,
+            benchmark=benchmark,
         )
     else:
         raise ValueError(f"Unsupported offload mode: {mode}")

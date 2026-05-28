@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from weights.model_bundle import ModelBundle
 from weights.weight_spec import GlobalWeights, LayerWeights
+
+if TYPE_CHECKING:
+    from eval.benchmark import BenchmarkHarness
 
 
 class PrefetchOffloadWeightProvider:
@@ -13,11 +18,13 @@ class PrefetchOffloadWeightProvider:
         device: torch.device,
         dtype: torch.dtype,
         gpu_layer_budget: int | None,
+        benchmark: BenchmarkHarness | None = None,
     ):
         self.model_bundle = model_bundle
         self.device = device
         self.dtype = dtype
         self.gpu_layer_budget = gpu_layer_budget
+        self.benchmark = benchmark
 
         self._copy_stream = torch.cuda.Stream(device=device)
 
@@ -72,6 +79,9 @@ class PrefetchOffloadWeightProvider:
             self._gpu_access_order.remove(layer_id)
         self._gpu_access_order.append(layer_id)
 
+        if self.benchmark is not None:
+            self.benchmark.on_layer_copy_start(layer_id)
+
         gpu_tensors = {
             k: torch.empty(t.shape, dtype=self.dtype, device=self.device)
             for k, t in cpu_lw.tensors.items()
@@ -92,6 +102,8 @@ class PrefetchOffloadWeightProvider:
         event = self._events.get(layer_id)
         if event is not None:
             event.synchronize()
+        if self.benchmark is not None:
+            self.benchmark.on_layer_copy_end(layer_id)
 
     def get_layer_weights(self, layer_id: int) -> LayerWeights:
         return self._gpu_cache[layer_id]
