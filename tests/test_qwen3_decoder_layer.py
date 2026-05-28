@@ -48,6 +48,8 @@ def make_layer_weights(config: ModelConfig, layer_id: int = 0) -> LayerWeights:
                 config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32
             )
             * 0.02,
+            "self_attn.q_norm.weight": torch.ones(config.head_dim, dtype=torch.float32),
+            "self_attn.k_norm.weight": torch.ones(config.head_dim, dtype=torch.float32),
             "self_attn.v_proj.weight": torch.randn(
                 config.num_key_value_heads * config.head_dim, hs, dtype=torch.float32
             )

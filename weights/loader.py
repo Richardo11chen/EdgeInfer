@@ -8,7 +8,7 @@ from safetensors import safe_open
 
 from weights.model_config import ModelConfig
 from weights.name_mapping import WeightNameMapper
-from weights.weight_spec import LAYER_WEIGHT_KEYS, GLOBAL_WEIGHT_KEYS, GlobalWeights, LayerWeights
+from weights.weight_spec import LAYER_WEIGHT_KEYS, GlobalWeights, LayerWeights
 
 
 class WeightLoader:
@@ -37,9 +37,21 @@ class WeightLoader:
 
     def load_global_weights(self) -> GlobalWeights:
         tensors: dict[str, torch.Tensor] = {}
-        for hf_name in GLOBAL_WEIGHT_KEYS:
-            internal_name = self._name_mapper.hf_global_name_to_internal(hf_name)
-            tensors[internal_name] = self._load_tensor(hf_name)
+        embed_hf_name = "model.embed_tokens.weight"
+        norm_hf_name = "model.norm.weight"
+        lm_head_hf_name = "lm_head.weight"
+
+        tensors[self._name_mapper.hf_global_name_to_internal(embed_hf_name)] = self._load_tensor(embed_hf_name)
+        tensors[self._name_mapper.hf_global_name_to_internal(norm_hf_name)] = self._load_tensor(norm_hf_name)
+
+        if self.config.tie_word_embeddings:
+            tensors[self._name_mapper.hf_global_name_to_internal(lm_head_hf_name)] = tensors[
+                "model.embed_tokens.weight"
+            ]
+        else:
+            tensors[self._name_mapper.hf_global_name_to_internal(lm_head_hf_name)] = self._load_tensor(
+                lm_head_hf_name
+            )
 
         return GlobalWeights(
             embed_tokens=tensors["model.embed_tokens.weight"],

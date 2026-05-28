@@ -37,9 +37,11 @@ class Qwen3DecoderLayer:
         return hidden_states
 
     def _rms_norm(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        variance = x.pow(2).mean(dim=-1, keepdim=True)
-        x_norm = x * torch.rsqrt(variance + self.config.rms_norm_eps)
-        return x_norm * weight
+        input_dtype = x.dtype
+        x_fp32 = x.float()
+        variance = x_fp32.pow(2).mean(dim=-1, keepdim=True)
+        x_norm = x_fp32 * torch.rsqrt(variance + self.config.rms_norm_eps)
+        return (x_norm.to(dtype=input_dtype) * weight.to(dtype=input_dtype))
 
     def _self_attn(
         self,
@@ -61,6 +63,8 @@ class Qwen3DecoderLayer:
         q = q.view(batch_size, seq_len, num_heads, head_dim).permute(0, 2, 1, 3)
         k = k.view(batch_size, seq_len, num_kv_heads, head_dim).permute(0, 2, 1, 3)
         v = v.view(batch_size, seq_len, num_kv_heads, head_dim).permute(0, 2, 1, 3)
+        q = self._rms_norm(q, layer_weights.get("self_attn.q_norm.weight"))
+        k = self._rms_norm(k, layer_weights.get("self_attn.k_norm.weight"))
 
         cos, sin = self.rope.get_cos_sin(position_ids)
         cos = cos.to(dtype=q.dtype, device=q.device)
@@ -86,9 +90,8 @@ class Qwen3DecoderLayer:
         query_pos = position_ids.to(device=attn_scores.device, dtype=torch.long).unsqueeze(-1)
         key_pos = torch.arange(end_pos, device=attn_scores.device, dtype=torch.long).view(1, 1, 1, -1)
         causal_mask = key_pos <= query_pos.unsqueeze(1)
-        attn_scores = attn_scores.masked_fill(~causal_mask, torch.finfo(attn_scores.dtype).min)
-
-        attn_probs = torch.softmax(attn_scores, dim=-1)
+        attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
+        attn_probs = torch.softmax(attn_scores.float(), dim=-1).to(dtype=attn_scores.dtype)
         attn_output = torch.matmul(attn_probs, all_v)
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, -1)
 
@@ -103,7 +106,8 @@ class Qwen3DecoderLayer:
         return down
 
     def _apply_rope(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
-        rotated = torch.stack((-x2, x1), dim=-1).flatten(-2)
+        half = x.shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        rotated = torch.cat((-x2, x1), dim=-1)
         return x * cos + rotated * sin
