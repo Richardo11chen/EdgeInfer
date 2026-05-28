@@ -22,6 +22,9 @@ class GenerationRuntime:
         self.benchmark = benchmark
 
     def prefill(self, input_ids: torch.Tensor, kv_cache: KVCache) -> torch.Tensor:
+        if self.benchmark is not None:
+            self.benchmark.on_prefill_start()
+
         global_weights = self.provider.get_global_weights()
         hidden_states = self.model.embed(input_ids, global_weights)
 
@@ -41,7 +44,12 @@ class GenerationRuntime:
             )
             self.provider.release_layer(layer_id)
 
-        return self.model.final_logits(hidden_states, global_weights)
+        logits = self.model.final_logits(hidden_states, global_weights)
+
+        if self.benchmark is not None:
+            self.benchmark.on_prefill_end()
+
+        return logits
 
     def decode_one(
         self,
@@ -85,9 +93,15 @@ class GenerationRuntime:
         generated = input_ids
         logits = self.prefill(generated, kv_cache)
 
+        if self.benchmark is not None:
+            self.benchmark.on_decode_start()
+
         for step in range(max_new_tokens):
             next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
             generated = torch.cat([generated, next_token], dim=1)
+
+            if self.benchmark is not None:
+                self.benchmark.on_decode_token_end(step)
 
             if step == max_new_tokens - 1:
                 break
