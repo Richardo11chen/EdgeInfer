@@ -26,8 +26,8 @@ class CorrectnessResult:
 def compare_logits(
     actual: torch.Tensor,
     expected: torch.Tensor,
-    abs_tol: float,
-    rel_tol: float,
+    abs_tol: float = 1e-5,
+    rel_tol: float = 1e-5,
 ) -> CorrectnessResult:
     if actual.shape != expected.shape:
         return CorrectnessResult(False, message=f"shape mismatch: {tuple(actual.shape)} vs {tuple(expected.shape)}")

@@ -19,7 +19,7 @@ class TestCompareLogits:
     def test_small_difference_within_tolerance(self):
         x = torch.randn(4, 8)
         y = x + 1e-6 * torch.randn(4, 8)
-        r = compare_logits(x, y, atol=1e-4, rtol=1e-4)
+        r = compare_logits(x, y, abs_tol=1e-4, rel_tol=1e-4)
         assert r.passed
 
     def test_large_difference_exceeds_tolerance(self):
