@@ -21,6 +21,43 @@ class GenerationRuntime:
         self.config = config
         self.benchmark = benchmark
 
+    def _run_layers(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_cache: KVCache,
+    ) -> torch.Tensor:
+        num_layers = self.config.num_hidden_layers
+
+        self.provider.prefetch_layer(0)
+        self.provider.synchronize_layer(0)
+
+        for layer_id in range(num_layers):
+            if layer_id + 1 < num_layers:
+                self.provider.prefetch_layer(layer_id + 1)
+
+            if self.benchmark is not None:
+                self.benchmark.on_layer_compute_start(layer_id)
+
+            layer_weights = self.provider.get_layer_weights(layer_id)
+            hidden_states = self.model.forward_layer(
+                layer_id=layer_id,
+                hidden_states=hidden_states,
+                position_ids=position_ids,
+                layer_weights=layer_weights,
+                kv_cache=kv_cache,
+            )
+
+            if self.benchmark is not None:
+                self.benchmark.on_layer_compute_end(layer_id)
+
+            self.provider.release_layer(layer_id)
+
+            if layer_id + 1 < num_layers:
+                self.provider.synchronize_layer(layer_id + 1)
+
+        return hidden_states
+
     def prefill(self, input_ids: torch.Tensor, kv_cache: KVCache) -> torch.Tensor:
         if self.benchmark is not None:
             self.benchmark.on_prefill_start()
@@ -31,18 +68,7 @@ class GenerationRuntime:
         batch_size, seq_len = input_ids.shape
         position_ids = torch.arange(seq_len, device=input_ids.device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
 
-        for layer_id in range(self.config.num_hidden_layers):
-            self.provider.prefetch_layer(layer_id)
-            self.provider.synchronize_layer(layer_id)
-            layer_weights = self.provider.get_layer_weights(layer_id)
-            hidden_states = self.model.forward_layer(
-                layer_id=layer_id,
-                hidden_states=hidden_states,
-                position_ids=position_ids,
-                layer_weights=layer_weights,
-                kv_cache=kv_cache,
-            )
-            self.provider.release_layer(layer_id)
+        hidden_states = self._run_layers(hidden_states, position_ids, kv_cache)
 
         logits = self.model.final_logits(hidden_states, global_weights)
 
@@ -60,18 +86,7 @@ class GenerationRuntime:
         global_weights = self.provider.get_global_weights()
         hidden_states = self.model.embed(input_ids, global_weights)
 
-        for layer_id in range(self.config.num_hidden_layers):
-            self.provider.prefetch_layer(layer_id)
-            self.provider.synchronize_layer(layer_id)
-            layer_weights = self.provider.get_layer_weights(layer_id)
-            hidden_states = self.model.forward_layer(
-                layer_id=layer_id,
-                hidden_states=hidden_states,
-                position_ids=position_id,
-                layer_weights=layer_weights,
-                kv_cache=kv_cache,
-            )
-            self.provider.release_layer(layer_id)
+        hidden_states = self._run_layers(hidden_states, position_id, kv_cache)
 
         return self.model.final_logits(hidden_states, global_weights)
 

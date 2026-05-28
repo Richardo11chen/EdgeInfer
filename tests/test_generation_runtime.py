@@ -117,6 +117,109 @@ def test_generate_runs_for_specified_steps() -> None:
     assert out.shape == (2, 11)
 
 
+class _RecordingProvider:
+    """Fake provider that records call order for pipeline testing."""
+
+    def __init__(self, config: ModelConfig):
+        self.config = config
+        self.calls: list[tuple[str, int]] = []
+        self._weights = _FakeLoader(config)
+
+    def get_global_weights(self) -> GlobalWeights:
+        return self._weights.load_global_weights()
+
+    def prefetch_layer(self, layer_id: int) -> None:
+        self.calls.append(("prefetch", layer_id))
+
+    def synchronize_layer(self, layer_id: int) -> None:
+        self.calls.append(("sync", layer_id))
+
+    def get_layer_weights(self, layer_id: int) -> LayerWeights:
+        self.calls.append(("compute", layer_id))
+        return self._weights.load_layer_weights(layer_id)
+
+    def release_layer(self, layer_id: int) -> None:
+        self.calls.append(("release", layer_id))
+
+    def close(self) -> None:
+        pass
+
+
+def _make_recording_runtime() -> tuple[GenerationRuntime, _RecordingProvider]:
+    config = make_config()
+    model = Qwen3Model(config)
+    provider = _RecordingProvider(config)
+    runtime = GenerationRuntime(model=model, provider=provider, config=config)
+    return runtime, provider
+
+
+def test_pipeline_prefetch_before_sync_for_layer_0() -> None:
+    runtime, provider = _make_recording_runtime()
+    input_ids = torch.randint(0, runtime.config.vocab_size, (1, 4), dtype=torch.long)
+    cache = KVCache(runtime.config, batch_size=1, max_sequence_length=8, device=torch.device("cpu"), dtype=torch.float32)
+
+    runtime.prefill(input_ids, cache)
+
+    idx_prefetch0 = provider.calls.index(("prefetch", 0))
+    idx_sync0 = provider.calls.index(("sync", 0))
+    assert idx_prefetch0 < idx_sync0, "prefetch(0) must happen before sync(0)"
+
+
+def test_pipeline_prefetch_next_before_compute_current() -> None:
+    runtime, provider = _make_recording_runtime()
+    input_ids = torch.randint(0, runtime.config.vocab_size, (1, 4), dtype=torch.long)
+    cache = KVCache(runtime.config, batch_size=1, max_sequence_length=8, device=torch.device("cpu"), dtype=torch.float32)
+
+    runtime.prefill(input_ids, cache)
+
+    idx_prefetch1 = provider.calls.index(("prefetch", 1))
+    idx_compute0 = provider.calls.index(("compute", 0))
+    assert idx_prefetch1 < idx_compute0, "prefetch(1) must happen before compute(0)"
+
+
+def test_pipeline_sync_next_after_compute_current() -> None:
+    runtime, provider = _make_recording_runtime()
+    input_ids = torch.randint(0, runtime.config.vocab_size, (1, 4), dtype=torch.long)
+    cache = KVCache(runtime.config, batch_size=1, max_sequence_length=8, device=torch.device("cpu"), dtype=torch.float32)
+
+    runtime.prefill(input_ids, cache)
+
+    idx_sync1 = provider.calls.index(("sync", 1))
+    idx_compute0 = provider.calls.index(("compute", 0))
+    assert idx_compute0 < idx_sync1, "sync(1) must happen after compute(0)"
+
+
+def test_pipeline_decode_one_has_same_ordering() -> None:
+    runtime, provider = _make_recording_runtime()
+    prompt = torch.randint(0, runtime.config.vocab_size, (1, 4), dtype=torch.long)
+    cache = KVCache(runtime.config, batch_size=1, max_sequence_length=8, device=torch.device("cpu"), dtype=torch.float32)
+    runtime.prefill(prompt, cache)
+    provider.calls.clear()
+
+    next_token = torch.randint(0, runtime.config.vocab_size, (1, 1), dtype=torch.long)
+    pos = torch.full((1, 1), 4, dtype=torch.long)
+    runtime.decode_one(next_token, pos, cache)
+
+    idx_prefetch1 = provider.calls.index(("prefetch", 1))
+    idx_compute0 = provider.calls.index(("compute", 0))
+    idx_sync1 = provider.calls.index(("sync", 1))
+    assert idx_prefetch1 < idx_compute0, "prefetch(1) must happen before compute(0) in decode_one"
+    assert idx_compute0 < idx_sync1, "sync(1) must happen after compute(0) in decode_one"
+
+
+def test_pipeline_release_after_compute() -> None:
+    runtime, provider = _make_recording_runtime()
+    input_ids = torch.randint(0, runtime.config.vocab_size, (1, 4), dtype=torch.long)
+    cache = KVCache(runtime.config, batch_size=1, max_sequence_length=8, device=torch.device("cpu"), dtype=torch.float32)
+
+    runtime.prefill(input_ids, cache)
+
+    for layer_id in range(runtime.config.num_hidden_layers):
+        idx_compute = provider.calls.index(("compute", layer_id))
+        idx_release = provider.calls.index(("release", layer_id))
+        assert idx_compute < idx_release, f"release({layer_id}) must happen after compute({layer_id})"
+
+
 def test_kv_cache_length_grows_with_decode() -> None:
     config = make_config()
     runtime = make_runtime(config)
