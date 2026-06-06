@@ -66,7 +66,7 @@ run_one() {
     [[ -n "$budget" ]] && budget_arg=(--gpu-layer-budget "$budget")
 
     echo "--- $label ---" | tee -a "$RUN_LOG"
-    uv run python -m eval.run_generation \
+    PYTHONPATH=. uv run python eval/run_generation.py \
         --model-path "$MODEL_PATH" \
         --prompt "$PROMPT" \
         --mode "$mode" \

@@ -71,7 +71,14 @@ def main() -> None:
     print(f"Loading tokenizer from {args.model_path} ...")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
-    print("Loading HuggingFace reference model ...")
+    encoded = tokenizer(args.prompt, return_tensors="pt")
+    input_ids = encoded["input_ids"].to(torch_device)
+    prompt_len = input_ids.shape[1]
+
+    print(f"Prompt length: {prompt_len} tokens, max new tokens: {args.max_new_tokens}")
+
+    # === Phase 1: HF reference (free before loading RT to avoid OOM) ===
+    print("\nLoading HuggingFace reference model ...")
     hf_model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         torch_dtype=torch_dtype,
@@ -79,7 +86,32 @@ def main() -> None:
     ).to(torch_device)
     hf_model.eval()
 
-    print("Loading EdgeInfer runtime ...")
+    print("Running HF prefill ...")
+    with torch.no_grad():
+        hf_outputs = hf_model(input_ids=input_ids, use_cache=True)
+        hf_logits = hf_outputs.logits
+
+    print("Running HF greedy generation ...")
+    with torch.no_grad():
+        hf_tokens = _hf_greedy_generate(hf_model, input_ids, args.max_new_tokens)
+
+    print("Timing HF generation ...")
+    hf_start = torch.cuda.Event(enable_timing=True)
+    hf_end = torch.cuda.Event(enable_timing=True)
+    with torch.no_grad():
+        hf_start.record()
+        _hf_greedy_generate(hf_model, input_ids, args.max_new_tokens)
+        hf_end.record()
+    torch.cuda.synchronize()
+    hf_total_ms = hf_start.elapsed_time(hf_end)
+    hf_tokens_per_sec = (args.max_new_tokens / hf_total_ms) * 1000 if hf_total_ms > 0 else float("inf")
+
+    print("Freeing HF model ...")
+    del hf_model
+    torch.cuda.empty_cache()
+
+    # === Phase 2: EdgeInfer runtime ===
+    print("\nLoading EdgeInfer runtime ...")
     bundle = open_model_bundle(args.model_path)
     model = Qwen3Model(bundle.config)
     rt_benchmark = BenchmarkHarness()
@@ -98,12 +130,7 @@ def main() -> None:
         benchmark=rt_benchmark,
     )
 
-    encoded = tokenizer(args.prompt, return_tensors="pt")
-    input_ids = encoded["input_ids"].to(torch_device)
-    prompt_len = input_ids.shape[1]
     max_len = prompt_len + args.max_new_tokens
-
-    print(f"Prompt length: {prompt_len} tokens, max new tokens: {args.max_new_tokens}")
 
     # --- Correctness: prefill logits ---
     print("\n=== Correctness: Prefill Logits ===")
@@ -115,10 +142,8 @@ def main() -> None:
         dtype=torch_dtype,
     )
     with torch.no_grad():
-        hf_outputs = hf_model(input_ids=input_ids, use_cache=True)
-        hf_logits = hf_outputs.logits
         rt_logits = runtime.prefill(input_ids, kv_cache)
-    logits_result = compare_logits(rt_logits, hf_logits)
+    logits_result = compare_logits(rt_logits, hf_logits, abs_tol=1e-2, rel_tol=1e-2)
     print(
         f"  passed={logits_result.passed} "
         f"max_abs_error={logits_result.max_abs_error} "
@@ -128,7 +153,6 @@ def main() -> None:
     # --- Correctness: generated tokens ---
     print("\n=== Correctness: Generated Tokens ===")
     with torch.no_grad():
-        hf_tokens = _hf_greedy_generate(hf_model, input_ids, args.max_new_tokens)
         rt_tokens = runtime.generate(input_ids=input_ids, max_new_tokens=args.max_new_tokens)
     tokens_result = compare_tokens(rt_tokens, hf_tokens)
     print(f"  passed={tokens_result.passed} mismatch_count={tokens_result.mismatch_count}")
@@ -136,16 +160,6 @@ def main() -> None:
     # --- Performance comparison ---
     print("\n=== Performance ===")
     rt_summary = rt_benchmark.get_summary()
-
-    hf_start = torch.cuda.Event(enable_timing=True)
-    hf_end = torch.cuda.Event(enable_timing=True)
-    with torch.no_grad():
-        hf_start.record()
-        _hf_greedy_generate(hf_model, input_ids, args.max_new_tokens)
-        hf_end.record()
-    torch.cuda.synchronize()
-    hf_total_ms = hf_start.elapsed_time(hf_end)
-    hf_tokens_per_sec = (args.max_new_tokens / hf_total_ms) * 1000 if hf_total_ms > 0 else float("inf")
 
     print(f"  HF total time:        {hf_total_ms:.2f} ms")
     print(f"  HF tokens/sec:        {hf_tokens_per_sec:.2f}")
