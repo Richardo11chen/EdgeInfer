@@ -17,7 +17,8 @@ class TestCompareLogits:
         assert r.max_rel_error == pytest.approx(0.0, abs=1e-10)
 
     def test_small_difference_within_tolerance(self):
-        x = torch.randn(4, 8)
+        torch.manual_seed(42)
+        x = torch.randn(4, 8).abs() + 0.5  # keep away from zero to avoid rel-error blowup
         y = x + 1e-6 * torch.randn(4, 8)
         r = compare_logits(x, y, abs_tol=1e-4, rel_tol=1e-4)
         assert r.passed

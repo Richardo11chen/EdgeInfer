@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from model.kv_cache import KVCache
 from model.qwen3 import Qwen3Model
 from runtime.weight_provider import WeightProvider
 from weights.model_config import ModelConfig
+
+if TYPE_CHECKING:
+    from eval.benchmark import BenchmarkHarness
 
 
 class GenerationRuntime:

@@ -32,6 +32,7 @@ class PrefetchOffloadWeightProvider:
         self._gpu_cache: dict[int, LayerWeights] = {}
         self._events: dict[int, torch.cuda.Event] = {}
         self._gpu_access_order: list[int] = []
+        self._synced: set[int] = set()
 
         cpu_global = model_bundle.loader.load_global_weights()
         embed_tokens = cpu_global.embed_tokens.to(device=device, dtype=dtype)
@@ -48,15 +49,25 @@ class PrefetchOffloadWeightProvider:
     def get_global_weights(self) -> GlobalWeights:
         return self._global_weights
 
-    def _evict_lru(self) -> None:
-        """Evict the least recently used layer from GPU to stay within budget."""
+    def _evict_lru(self) -> bool:
+        """Evict the least recently used layer from GPU to stay within budget.
+
+        Skips layers that have been synchronized but not yet released, since
+        they are still needed for an upcoming compute pass.
+
+        Returns True if a layer was evicted, False if no safe candidate was found.
+        """
         if not self._gpu_access_order:
-            return
-        oldest = self._gpu_access_order.pop(0)
-        event = self._events.pop(oldest, None)
-        if event is not None:
-            event.synchronize()
-        self._gpu_cache.pop(oldest, None)
+            return False
+        for i, lid in enumerate(self._gpu_access_order):
+            if lid not in self._synced:
+                self._gpu_access_order.pop(i)
+                event = self._events.pop(lid, None)
+                if event is not None:
+                    event.synchronize()
+                self._gpu_cache.pop(lid, None)
+                return True
+        return False
 
     def prefetch_layer(self, layer_id: int) -> None:
         if layer_id not in self._cpu_cache:
@@ -73,7 +84,8 @@ class PrefetchOffloadWeightProvider:
         # Enforce GPU layer budget: evict LRU before adding a new layer.
         if self.gpu_layer_budget is not None and layer_id not in self._gpu_cache:
             while len(self._gpu_cache) >= self.gpu_layer_budget:
-                self._evict_lru()
+                if not self._evict_lru():
+                    break
 
         if layer_id in self._gpu_access_order:
             self._gpu_access_order.remove(layer_id)
@@ -102,6 +114,7 @@ class PrefetchOffloadWeightProvider:
         event = self._events.get(layer_id)
         if event is not None:
             event.synchronize()
+        self._synced.add(layer_id)
         if self.benchmark is not None:
             self.benchmark.on_layer_copy_end(layer_id)
 
@@ -111,6 +124,7 @@ class PrefetchOffloadWeightProvider:
     def release_layer(self, layer_id: int) -> None:
         self._gpu_cache.pop(layer_id, None)
         self._events.pop(layer_id, None)
+        self._synced.discard(layer_id)
         if layer_id in self._gpu_access_order:
             self._gpu_access_order.remove(layer_id)
         if self._cpu_cache.get(layer_id) is not None:
@@ -121,4 +135,5 @@ class PrefetchOffloadWeightProvider:
         self._cpu_cache.clear()
         self._events.clear()
         self._gpu_access_order.clear()
+        self._synced.clear()
         del self._global_weights
