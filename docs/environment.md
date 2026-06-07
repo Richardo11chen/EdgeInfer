@@ -71,3 +71,19 @@ models/
 uv sync
 uv run python scripts/check_env.py
 ```
+
+## vLLM Runner
+
+vLLM 对照实验现在通过 `uv` 的 `vllm` dependency group 管理，不再使用单独的 `requirements-vllm.txt`。
+
+安装包含 vLLM 的环境：
+
+```bash
+uv sync --group vllm
+```
+
+运行 vLLM 对照脚本时，脚本会自动使用：
+
+```bash
+uv run --group vllm ...
+```

@@ -28,6 +28,9 @@ dev = [
     "mypy",
     "ipython",
 ]
+vllm = [
+    "vllm",
+]
 
 [tool.uv.sources]
 torch = [
