@@ -1,5 +1,19 @@
 # Results Guide
 
+## Public Entry
+
+课程项目复现建议只使用根目录 wrapper：
+
+```bash
+cp edgeinfer.env.example edgeinfer.env
+vim edgeinfer.env
+
+./run smoke
+./run prof
+./run report
+./run final
+```
+
 ## Profiling Commands
 
 生成 `torch.profiler` timeline：

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: ./run {smoke|prof|report|final}" >&2
+  exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/edgeinfer.env" ]]; then
+  echo "missing edgeinfer.env; copy edgeinfer.env.example and edit it first" >&2
+  exit 1
+fi
+
+set -a
+source "$ROOT_DIR/edgeinfer.env"
+set +a
+
+case "$1" in
+  smoke)
+    bash scripts/run_1_7b_correctness.sh
+    ;;
+  prof)
+    bash scripts/run_profile_timeline.sh
+    bash scripts/run_nsys_profile.sh
+    ;;
+  report)
+    PYTHONPATH=. uv run python eval/aggregate_results.py --base-dir "$EDGEINFER_OUTPUT_DIR"
+    ;;
+  final)
+    bash scripts/run_all_required_experiments.sh
+    ;;
+  *)
+    echo "unknown command: $1" >&2
+    echo "usage: ./run {smoke|prof|report|final}" >&2
+    exit 1
+    ;;
+esac

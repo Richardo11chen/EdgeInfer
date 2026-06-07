@@ -72,6 +72,20 @@ uv sync
 uv run python scripts/check_env.py
 ```
 
+## Quickstart
+
+公开入口统一为根目录下的 `./run`：
+
+```bash
+cp edgeinfer.env.example edgeinfer.env
+vim edgeinfer.env
+
+./run smoke
+./run prof
+./run report
+./run final
+```
+
 ## vLLM Runner
 
 vLLM 对照实验现在通过 `uv` 的 `vllm` dependency group 管理，不再使用单独的 `requirements-vllm.txt`。
