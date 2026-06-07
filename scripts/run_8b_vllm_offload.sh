@@ -4,7 +4,7 @@ set -euo pipefail
 MODEL_PATH=${EDGEINFER_QWEN3_8B:-${1:-}}
 PROMPTS_FILE=${EDGEINFER_PROMPTS:-${2:-eval/prompts/required_prompts.jsonl}}
 OUTPUT_ROOT=${EDGEINFER_OUTPUT_DIR:-outputs/required}
-GPU_LAYER_BUDGET=${EDGEINFER_GPU_LAYER_BUDGET:-${3:-4}}
+CPU_OFFLOAD_GB=${EDGEINFER_VLLM_CPU_OFFLOAD_GB:-${3:-24}}
 MAX_NEW_TOKENS=${EDGEINFER_8B_MAX_NEW_TOKENS:-256}
 
 if [[ -z "$MODEL_PATH" ]]; then
@@ -12,15 +12,13 @@ if [[ -z "$MODEL_PATH" ]]; then
   exit 1
 fi
 
-OUTDIR="$OUTPUT_ROOT/8b_prefetch_offload"
+OUTDIR="$OUTPUT_ROOT/8b_vllm_offload"
 mkdir -p "$OUTDIR"
 
-PYTHONPATH=. uv run python eval/run_edgeinfer_batch.py \
+PYTHONPATH=. uv run --group vllm python eval/run_vllm.py \
   --model-path "$MODEL_PATH" \
   --prompts-file "$PROMPTS_FILE" \
-  --mode prefetch \
-  --device cuda \
-  --dtype float16 \
   --max-new-tokens "$MAX_NEW_TOKENS" \
-  --gpu-layer-budget "$GPU_LAYER_BUDGET" \
+  --dtype float16 \
+  --cpu-offload-gb "$CPU_OFFLOAD_GB" \
   --output-dir "$OUTDIR"

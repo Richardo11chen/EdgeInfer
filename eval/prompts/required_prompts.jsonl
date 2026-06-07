@@ -1,0 +1,10 @@
+{"prompt":"请用两句话解释为什么 pinned memory 能提升 CPU 到 GPU 的拷贝效率。"}
+{"prompt":"Summarize the key idea of transformer self-attention for a beginner in under 80 words."}
+{"prompt":"阅读下面任务并给出简洁计划：我要在 8GB 显存显卡上运行一个 8B 模型，请说明你会如何控制显存占用、验证吞吐、并记录实验结果。"}
+{"prompt":"Write a short product blurb for a lightweight local LLM benchmark tool aimed at students."}
+{"prompt":"What is the difference between latency and throughput in neural network inference? Answer with one example."}
+{"prompt":"解释下面 Python 代码会输出什么，并说明原因：\nfor i in range(3):\n    print(i)\nelse:\n    print('done')"}
+{"prompt":"Give a concise comparison between greedy decoding and sampling, and mention one tradeoff for each."}
+{"prompt":"请将下面这段话压缩成一句摘要：边缘设备通常受限于显存和带宽，因此推理系统需要在计算、拷贝、缓存策略之间做平衡。"}
+{"prompt":"A student says: 'If TTFT is low, total generation is always fast.' Explain why that is incomplete."}
+{"prompt":"Design a 5-line checklist for validating that an offloading runtime is not re-reading weights every token."}

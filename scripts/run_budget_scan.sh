@@ -1,124 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH=""
-PROMPT=""
-MAX_NEW_TOKENS=128
-DEVICE="cuda"
-DTYPE="float16"
-OUTDIR=""
+MODEL_PATH=${EDGEINFER_QWEN3_8B:-${1:-}}
+PROMPTS_FILE=${EDGEINFER_PROMPTS:-${2:-eval/prompts/required_prompts.jsonl}}
+OUTPUT_ROOT=${EDGEINFER_OUTPUT_DIR:-outputs/required}
+BUDGETS=${EDGEINFER_BUDGET_SCAN_VALUES:-"1 2 4 8 16"}
+MAX_NEW_TOKENS=${EDGEINFER_8B_MAX_NEW_TOKENS:-256}
 
-usage() {
-    cat <<EOF
-Usage: $0 --model-path <path> --prompt <prompt> [options]
-
-Options:
-  --model-path <path>       Path to model directory (required)
-  --prompt <prompt>         Prompt text (required)
-  --max-new-tokens <N>      Max tokens to generate (default: 128)
-  --device <device>         Torch device (default: cuda)
-  --dtype <dtype>           Torch dtype (default: float16)
-  --output-dir <dir>        Output directory (default: outputs/budget_scan/)
-  -h, --help                Show this help
-EOF
-    exit 1
-}
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --model-path) MODEL_PATH="$2"; shift 2 ;;
-        --prompt) PROMPT="$2"; shift 2 ;;
-        --max-new-tokens) MAX_NEW_TOKENS="$2"; shift 2 ;;
-        --device) DEVICE="$2"; shift 2 ;;
-        --dtype) DTYPE="$2"; shift 2 ;;
-        --output-dir) OUTDIR="$2"; shift 2 ;;
-        -h|--help) usage ;;
-        *) echo "Unknown option: $1"; usage ;;
-    esac
-done
-
-if [[ -z "$MODEL_PATH" || -z "$PROMPT" ]]; then
-    echo "Error: --model-path and --prompt are required"
-    usage
+if [[ -z "$MODEL_PATH" ]]; then
+  echo "EDGEINFER_QWEN3_8B or positional model path is required" >&2
+  exit 1
 fi
 
-OUTDIR="${OUTDIR:-outputs/budget_scan}"
+OUTDIR="$OUTPUT_ROOT/8b_budget_scan"
 mkdir -p "$OUTDIR"
+SUMMARY_CSV="$OUTDIR/budget_scan_summary.csv"
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-RUN_LOG="$OUTDIR/run_${TIMESTAMP}.log"
-SUMMARY_CSV="$OUTDIR/summary_${TIMESTAMP}.csv"
+echo "framework,mode,gpu_layer_budget,avg_prefill_latency_ms,avg_ttft_ms,avg_decode_tokens_per_sec,peak_memory_mib,total_copy_ms,total_compute_ms,measurement_notes" > "$SUMMARY_CSV"
 
-echo "=== Budget scan started at $(date) ===" | tee "$RUN_LOG"
-echo "Model: $MODEL_PATH" | tee -a "$RUN_LOG"
-echo "Prompt: $PROMPT" | tee -a "$RUN_LOG"
-echo "Max new tokens: $MAX_NEW_TOKENS" | tee -a "$RUN_LOG"
-echo "Device: $DEVICE, Dtype: $DTYPE" | tee -a "$RUN_LOG"
-echo "Output dir: $OUTDIR" | tee -a "$RUN_LOG"
-echo "" | tee -a "$RUN_LOG"
-
-run_one() {
-    local mode="$1"
-    local label="$2"
-    local budget="${3:-}"
-
-    local budget_arg=()
-    [[ -n "$budget" ]] && budget_arg=(--gpu-layer-budget "$budget")
-
-    echo "--- $label ---" | tee -a "$RUN_LOG"
-    PYTHONPATH=. uv run python eval/run_generation.py \
-        --model-path "$MODEL_PATH" \
-        --prompt "$PROMPT" \
-        --mode "$mode" \
-        --device "$DEVICE" \
-        --dtype "$DTYPE" \
-        --max-new-tokens "$MAX_NEW_TOKENS" \
-        "${budget_arg[@]}" \
-        --output-csv "$OUTDIR/${label}.csv" \
-        --output-log "$OUTDIR/${label}.json" \
-        2>&1 | tee -a "$RUN_LOG"
-    echo "" | tee -a "$RUN_LOG"
-}
-
-# Prefetch mode with various GPU layer budgets
-for budget in 1 2 4 8 16 28; do
-    run_one prefetch "prefetch_${budget}" "$budget"
+for budget in $BUDGETS; do
+  RUN_DIR="$OUTDIR/budget_${budget}"
+  echo "Running prefetch budget=$budget"
+  PYTHONPATH=. uv run python eval/run_edgeinfer_batch.py \
+    --model-path "$MODEL_PATH" \
+    --prompts-file "$PROMPTS_FILE" \
+    --mode prefetch \
+    --device cuda \
+    --dtype float16 \
+    --max-new-tokens "$MAX_NEW_TOKENS" \
+    --gpu-layer-budget "$budget" \
+    --output-dir "$RUN_DIR"
+  PYTHONPATH=. uv run python - <<PY >> "$SUMMARY_CSV"
+import json
+from pathlib import Path
+data = json.loads(Path("$RUN_DIR/edgeinfer_result.json").read_text(encoding="utf-8"))
+print(",".join([
+    data["framework"],
+    data["mode"],
+    str(data["gpu_layer_budget"]),
+    str(data["avg_prefill_latency_ms"]),
+    str(data["avg_ttft_ms"]),
+    str(data["avg_decode_tokens_per_sec"]),
+    str(data["peak_memory_mib"]),
+    str(data["total_copy_ms"]),
+    str(data["total_compute_ms"]),
+    "",
+]))
+PY
 done
 
-# Baselines: naive and resident (no budget)
-run_one naive "naive"
-run_one resident "resident"
+PYTHONPATH=. uv run python eval/plot_budget_scan.py \
+  --summary-csv "$SUMMARY_CSV" \
+  --output-dir "$OUTPUT_ROOT/figures"
 
-echo "=== Aggregating results ===" | tee -a "$RUN_LOG"
-
-echo "mode,gpu_layer_budget,prefill_latency_ms,ttft_ms,decode_tokens_per_sec,peak_memory_mib,total_copy_ms,total_compute_ms" > "$SUMMARY_CSV"
-
-for label in prefetch_1 prefetch_2 prefetch_4 prefetch_8 prefetch_16 prefetch_28 naive resident; do
-    json_file="$OUTDIR/${label}.json"
-    if [[ -f "$json_file" ]]; then
-        mode=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['mode'])")
-        budget=""
-        [[ "$mode" == "prefetch" ]] && budget=$(echo "$label" | sed 's/prefetch_//')
-        [[ -z "$budget" ]] && budget=""
-
-        prefill=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['prefill_latency_ms'])")
-        ttft=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['ttft_ms'])")
-        decode=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['decode_tokens_per_sec'])")
-        mem=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['peak_memory_mib'])")
-        copy=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['total_copy_ms'])")
-        compute=$(python3 -c "import json; d=json.load(open('$json_file')); print(d['total_compute_ms'])")
-
-        echo "$mode,$budget,$prefill,$ttft,$decode,$mem,$copy,$compute" >> "$SUMMARY_CSV"
-    else
-        echo "WARNING: $json_file not found, skipping" | tee -a "$RUN_LOG"
-    fi
-done
-
-echo "" | tee -a "$RUN_LOG"
-echo "=== Summary ===" | tee -a "$RUN_LOG"
-column -t -s, "$SUMMARY_CSV" | tee -a "$RUN_LOG"
-
-echo "" | tee -a "$RUN_LOG"
-echo "=== Budget scan completed at $(date) ===" | tee -a "$RUN_LOG"
-echo "Summary CSV: $SUMMARY_CSV" | tee -a "$RUN_LOG"
-echo "Per-run logs: $OUTDIR/" | tee -a "$RUN_LOG"
+cp "$SUMMARY_CSV" "$OUTDIR/plot_data.csv"

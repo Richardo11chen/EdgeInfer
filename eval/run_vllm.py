@@ -1,12 +1,85 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import time
 from pathlib import Path
 
 import torch
 from vllm import LLM, SamplingParams
+
+
+def _load_prompts(prompts_file: str) -> list[str]:
+    prompts: list[str] = []
+    with open(prompts_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                prompts.append(json.loads(line)["prompt"])
+    if not prompts:
+        raise ValueError(f"No prompts found in {prompts_file}")
+    return prompts
+
+
+def _maybe_init_nvml():
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        return pynvml, handle
+    except Exception:
+        return None, None
+
+
+def _sample_peak_memory_mib(pynvml_module, handle) -> float:
+    if pynvml_module is None or handle is None:
+        return 0.0
+    mem_info = pynvml_module.nvmlDeviceGetMemoryInfo(handle)
+    return mem_info.used / (1024 * 1024)
+
+
+def _write_prompt_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "prompt_index",
+                "prompt_length",
+                "generated_tokens",
+                "prefill_latency_ms",
+                "ttft_ms",
+                "decode_tokens_per_sec",
+                "peak_memory_mib",
+            ],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row[key] for key in writer.fieldnames})
+
+
+def _write_summary_csv(path: Path, result_json: dict[str, object]) -> None:
+    summary = result_json["summary"]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["field", "value"])
+        for key in (
+            "framework",
+            "model_path",
+            "dtype",
+            "cpu_offload_gb",
+            "max_new_tokens",
+            "num_prompts",
+            "avg_prompt_length",
+            "avg_prefill_latency_ms",
+            "avg_ttft_ms",
+            "avg_decode_tokens_per_sec",
+            "peak_memory_mib",
+            "measurement_notes",
+        ):
+            value = result_json.get(key, summary.get(key))
+            writer.writerow([key, value])
 
 
 def main() -> None:
@@ -16,133 +89,125 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
     parser.add_argument("--cpu-offload-gb", type=float, default=None)
-    parser.add_argument("--output-dir", default="outputs/comparison/vllm")
+    parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
 
-    prompts = []
-    with open(args.prompts_file) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                prompts.append(json.loads(line)["prompt"])
-
-    print(f"Loaded {len(prompts)} prompts")
-
-    try:
-        import pynvml
-        pynvml.nvmlInit()
-        nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        _baseline_mem = pynvml.nvmlDeviceGetMemoryInfo(nvml_handle).used / (1024 * 1024)
-        print(f"Baseline GPU memory: {_baseline_mem:.0f} MiB")
-    except Exception:
-        nvml_handle = None
-        _baseline_mem = 0.0
+    prompts = _load_prompts(args.prompts_file)
+    pynvml_module, nvml_handle = _maybe_init_nvml()
 
     torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
-    llm_kwargs: dict = {
+    llm_kwargs: dict[str, object] = {
         "model": args.model_path,
         "dtype": args.dtype,
         "enforce_eager": True,
         "trust_remote_code": True,
-        "gpu_memory_utilization": 0.70,
+        "gpu_memory_utilization": 0.7,
         "max_model_len": 2048,
     }
     if args.cpu_offload_gb is not None:
         llm_kwargs["cpu_offload_gb"] = args.cpu_offload_gb
 
+    print(f"Loaded {len(prompts)} prompts")
     print(f"Loading vLLM model: {args.model_path}")
     llm = LLM(**llm_kwargs)
 
-    sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=args.max_new_tokens,
-    )
+    warmup_params = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=min(args.max_new_tokens, 4))
+    llm.generate(prompts[:1], sampling_params=warmup_params)
 
-    # Warmup with first prompt to avoid first-run overhead
-    warmup_sp = SamplingParams(temperature=0.0, max_tokens=4)
-    llm.generate(prompts[:1], sampling_params=warmup_sp)
-
-    # Benchmark each prompt individually for accurate per-prompt timing
-    print(f"Running generation with max_new_tokens={args.max_new_tokens} ...")
-    results = []
-    peak_mem_mib = 0.0
+    greedy_params = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=args.max_new_tokens)
+    ttft_probe_params = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=1)
+    peak_memory_mib = 0.0
+    prompt_results: list[dict[str, object]] = []
 
     for i, prompt_text in enumerate(prompts):
         torch.cuda.synchronize()
-        t0 = time.perf_counter()
-        output = llm.generate([prompt_text], sampling_params=sampling_params)[0]
+        ttft_start = time.perf_counter()
+        ttft_output = llm.generate([prompt_text], sampling_params=ttft_probe_params)[0]
         torch.cuda.synchronize()
-        elapsed_s = time.perf_counter() - t0
+        ttft_ms = (time.perf_counter() - ttft_start) * 1000.0
 
-        prompt_len = len(output.prompt_token_ids)
+        torch.cuda.synchronize()
+        full_start = time.perf_counter()
+        output = llm.generate([prompt_text], sampling_params=greedy_params)[0]
+        torch.cuda.synchronize()
+        total_elapsed_s = time.perf_counter() - full_start
+
         generated_tokens = len(output.outputs[0].token_ids)
-        total_time_ms = elapsed_s * 1000.0
-        tokens_per_sec = generated_tokens / elapsed_s if elapsed_s > 0 else 0.0
+        decode_tokens = max(generated_tokens - 1, 0)
+        decode_elapsed_s = max(total_elapsed_s - (ttft_ms / 1000.0), 0.0)
+        decode_tokens_per_sec = decode_tokens / decode_elapsed_s if decode_tokens > 0 and decode_elapsed_s > 0 else 0.0
+        prompt_length = len(output.prompt_token_ids)
 
-        if nvml_handle is not None:
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(nvml_handle)
-            mem_used_mib = mem_info.used / (1024 * 1024)
-            peak_mem_mib = max(peak_mem_mib, mem_used_mib)
+        prompt_peak_mib = max(
+            _sample_peak_memory_mib(pynvml_module, nvml_handle),
+            float(torch.cuda.max_memory_allocated() / (1024 * 1024)) if torch.cuda.is_available() else 0.0,
+        )
+        peak_memory_mib = max(peak_memory_mib, prompt_peak_mib)
 
-        results.append({
-            "prompt_length": prompt_len,
-            "generated_tokens": generated_tokens,
-            "tokens_per_sec": round(tokens_per_sec, 2),
-            "total_time_ms": round(total_time_ms, 2),
-            "generated_text": output.outputs[0].text,
-        })
+        prompt_results.append(
+            {
+                "prompt_index": i,
+                "prompt_length": prompt_length,
+                "generated_tokens": generated_tokens,
+                "prefill_latency_ms": round(ttft_ms, 4),
+                "ttft_ms": round(ttft_ms, 4),
+                "decode_tokens_per_sec": round(decode_tokens_per_sec, 4),
+                "peak_memory_mib": round(prompt_peak_mib, 4),
+                "generated_text": output.outputs[0].text,
+                "ttft_probe_generated_tokens": len(ttft_output.outputs[0].token_ids),
+            }
+        )
 
-        print(f"  [{i+1}/{len(prompts)}] prompt_len={prompt_len} "
-              f"gen={generated_tokens} tok/s={tokens_per_sec:.2f} "
-              f"total={total_time_ms:.0f}ms")
+        print(
+            f"  [{i + 1}/{len(prompts)}] prompt_len={prompt_length} gen={generated_tokens} "
+            f"ttft={ttft_ms:.2f}ms decode={decode_tokens_per_sec:.4f}tok/s"
+        )
 
-    avg_tokens = sum(r["generated_tokens"] for r in results) / len(results)
-    avg_prompt_len = sum(r["prompt_length"] for r in results) / len(results)
-    avg_tok_per_sec = sum(r["tokens_per_sec"] for r in results) / len(results)
-    avg_total_time = sum(r["total_time_ms"] for r in results) / len(results)
-
-    if nvml_handle is not None:
-        peak_delta_mib = peak_mem_mib - _baseline_mem
-    else:
-        peak_delta_mib = 0.0
-
-    print(f"\n=== vLLM Benchmark Summary ===")
-    print(f"  Prompts:              {len(results)}")
-    print(f"  Avg prompt length:    {avg_prompt_len:.1f} tokens")
-    print(f"  Avg generated tokens: {avg_tokens:.1f}")
-    print(f"  Avg tokens/sec:       {avg_tok_per_sec:.2f}")
-    print(f"  Avg total time:       {avg_total_time:.0f} ms")
-    print(f"  Peak memory (delta):  {peak_delta_mib:.1f} MiB")
+    avg_prompt_length = sum(r["prompt_length"] for r in prompt_results) / len(prompt_results)
+    avg_prefill_latency_ms = sum(r["prefill_latency_ms"] for r in prompt_results) / len(prompt_results)
+    avg_ttft_ms = sum(r["ttft_ms"] for r in prompt_results) / len(prompt_results)
+    avg_decode_tokens_per_sec = sum(r["decode_tokens_per_sec"] for r in prompt_results) / len(prompt_results)
+    measurement_notes = (
+        "TTFT/prefill latency measured via a separate greedy max_tokens=1 run per prompt; "
+        "peak_memory_mib is sampled from NVML or torch peak allocation when available."
+    )
 
     result_json = {
-        "model_path": args.model_path,
         "framework": "vllm",
+        "model_path": args.model_path,
         "dtype": args.dtype,
-        "config": {
-            "max_new_tokens": args.max_new_tokens,
-            "cpu_offload_gb": args.cpu_offload_gb,
-        },
-        "results": results,
+        "cpu_offload_gb": args.cpu_offload_gb,
+        "max_new_tokens": args.max_new_tokens,
+        "num_prompts": len(prompt_results),
+        "avg_prompt_length": round(avg_prompt_length, 4),
+        "avg_prefill_latency_ms": round(avg_prefill_latency_ms, 4),
+        "avg_ttft_ms": round(avg_ttft_ms, 4),
+        "avg_decode_tokens_per_sec": round(avg_decode_tokens_per_sec, 4),
+        "peak_memory_mib": round(peak_memory_mib, 4),
+        "measurement_notes": measurement_notes,
+        "results": prompt_results,
         "summary": {
-            "num_prompts": len(results),
-            "avg_prompt_length": round(avg_prompt_len, 1),
-            "avg_generated_tokens": round(avg_tokens, 1),
-            "avg_tokens_per_sec": round(avg_tok_per_sec, 2),
-            "avg_total_time_ms": round(avg_total_time, 0),
-            "peak_memory_mib_delta": round(peak_delta_mib, 1),
+            "num_prompts": len(prompt_results),
+            "avg_prompt_length": round(avg_prompt_length, 4),
+            "avg_prefill_latency_ms": round(avg_prefill_latency_ms, 4),
+            "avg_ttft_ms": round(avg_ttft_ms, 4),
+            "avg_decode_tokens_per_sec": round(avg_decode_tokens_per_sec, 4),
+            "peak_memory_mib": round(peak_memory_mib, 4),
         },
     }
 
     outdir = Path(args.output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
-    outpath = outdir / "vllm_result.json"
-    outpath.write_text(json.dumps(result_json, indent=2), encoding="utf-8")
-    print(f"\nResults written to {outpath}")
+    (outdir / "vllm_result.json").write_text(json.dumps(result_json, indent=2), encoding="utf-8")
+    _write_prompt_csv(outdir / "prompt_results.csv", prompt_results)
+    _write_summary_csv(outdir / "summary.csv", result_json)
+    print(f"Results written to {outdir}")
 
-    if nvml_handle is not None:
-        pynvml.nvmlShutdown()
+    if pynvml_module is not None:
+        pynvml_module.nvmlShutdown()
 
 
 if __name__ == "__main__":
