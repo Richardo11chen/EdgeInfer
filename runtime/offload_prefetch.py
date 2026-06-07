@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import torch
@@ -10,6 +11,18 @@ from weights.weight_spec import GlobalWeights, LayerWeights
 
 if TYPE_CHECKING:
     from eval.benchmark import BenchmarkHarness
+
+
+@contextmanager
+def _profile_range(name: str, *, cuda: bool):
+    with torch.profiler.record_function(name):
+        if cuda:
+            torch.cuda.nvtx.range_push(name)
+        try:
+            yield
+        finally:
+            if cuda:
+                torch.cuda.nvtx.range_pop()
 
 
 class PrefetchOffloadWeightProvider:
@@ -114,9 +127,13 @@ class PrefetchOffloadWeightProvider:
         }
         event = torch.cuda.Event()
         with torch.cuda.stream(self._copy_stream):
-            for key, cpu_tensor in cpu_lw.tensors.items():
-                gpu_tensors[key].copy_(cpu_tensor, non_blocking=True)
-            event.record(self._copy_stream)
+            with _profile_range(
+                f"edgeinfer_h2d_layer_{layer_id}",
+                cuda=self.device.type == "cuda",
+            ):
+                for key, cpu_tensor in cpu_lw.tensors.items():
+                    gpu_tensors[key].copy_(cpu_tensor, non_blocking=True)
+                event.record(self._copy_stream)
 
         self._gpu_cache[layer_id] = LayerWeights(layer_id=layer_id, tensors=gpu_tensors)
         self._events[layer_id] = event

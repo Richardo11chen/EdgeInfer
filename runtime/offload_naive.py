@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import torch
@@ -9,6 +10,18 @@ from weights.weight_spec import GlobalWeights, LayerWeights
 
 if TYPE_CHECKING:
     from eval.benchmark import BenchmarkHarness
+
+
+@contextmanager
+def _profile_range(name: str, *, cuda: bool):
+    with torch.profiler.record_function(name):
+        if cuda:
+            torch.cuda.nvtx.range_push(name)
+        try:
+            yield
+        finally:
+            if cuda:
+                torch.cuda.nvtx.range_pop()
 
 
 class NaiveOffloadWeightProvider:
@@ -77,10 +90,14 @@ class NaiveOffloadWeightProvider:
 
         lw = self._cpu_layer_cache[layer_id]
 
-        gpu_tensors = {
-            k: t.to(device=self.device, dtype=self.dtype, non_blocking=False)
-            for k, t in lw.tensors.items()
-        }
+        with _profile_range(
+            f"edgeinfer_h2d_layer_{layer_id}",
+            cuda=self.device.type == "cuda",
+        ):
+            gpu_tensors = {
+                k: t.to(device=self.device, dtype=self.dtype, non_blocking=False)
+                for k, t in lw.tensors.items()
+            }
         self._gpu_layer_cache[layer_id] = LayerWeights(
             layer_id=layer_id, tensors=gpu_tensors
         )

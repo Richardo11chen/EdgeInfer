@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import torch
@@ -11,6 +12,18 @@ from weights.model_config import ModelConfig
 
 if TYPE_CHECKING:
     from eval.benchmark import BenchmarkHarness
+
+
+@contextmanager
+def _profile_range(name: str, *, cuda: bool):
+    with torch.profiler.record_function(name):
+        if cuda:
+            torch.cuda.nvtx.range_push(name)
+        try:
+            yield
+        finally:
+            if cuda:
+                torch.cuda.nvtx.range_pop()
 
 
 class GenerationRuntime:
@@ -44,14 +57,18 @@ class GenerationRuntime:
             if self.benchmark is not None:
                 self.benchmark.on_layer_compute_start(layer_id)
 
-            layer_weights = self.provider.get_layer_weights(layer_id)
-            hidden_states = self.model.forward_layer(
-                layer_id=layer_id,
-                hidden_states=hidden_states,
-                position_ids=position_ids,
-                layer_weights=layer_weights,
-                kv_cache=kv_cache,
-            )
+            with _profile_range(
+                f"edgeinfer_compute_layer_{layer_id}",
+                cuda=hidden_states.is_cuda,
+            ):
+                layer_weights = self.provider.get_layer_weights(layer_id)
+                hidden_states = self.model.forward_layer(
+                    layer_id=layer_id,
+                    hidden_states=hidden_states,
+                    position_ids=position_ids,
+                    layer_weights=layer_weights,
+                    kv_cache=kv_cache,
+                )
 
             if self.benchmark is not None:
                 self.benchmark.on_layer_compute_end(layer_id)
