@@ -64,8 +64,11 @@ def main() -> None:
         benchmark=benchmark,
     )
 
-    with torch.no_grad():
-        generated = runtime.generate(input_ids=input_ids, max_new_tokens=args.max_new_tokens)
+    try:
+        with torch.no_grad():
+            generated = runtime.generate(input_ids=input_ids, max_new_tokens=args.max_new_tokens)
+    finally:
+        provider.close()
 
     generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)
     summary = benchmark.get_summary()
@@ -96,7 +99,6 @@ def main() -> None:
         benchmark.export_csv(args.output_csv)
 
     print(json.dumps(log_entry, indent=2))
-    provider.close()
 
     if not generated_text:
         print("WARNING: generated text is empty", file=sys.stderr)

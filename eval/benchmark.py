@@ -10,6 +10,9 @@ from runtime.memory import MemoryTracker, bytes_to_mib
 
 class BenchmarkHarness:
     def __init__(self) -> None:
+        self._generation_start: float | None = None
+        self._generation_end: float | None = None
+        self._generated_tokens: int = 0
         self._prefill_start: float | None = None
         self._prefill_end: float | None = None
         self._decode_start: float | None = None
@@ -20,36 +23,55 @@ class BenchmarkHarness:
         self._layer_compute_totals: dict[int, float] = {}
         self._memory_tracker = MemoryTracker()
 
+    def _timestamp(self) -> float:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.perf_counter()
+
+    def _raw_timestamp(self) -> float:
+        return time.perf_counter()
+
+    def on_generation_start(self) -> None:
+        self._generation_start = self._timestamp()
+        self._generation_end = None
+        self._generated_tokens = 0
+
+    def on_generation_end(self, generated_tokens: int) -> None:
+        self._generation_end = self._timestamp()
+        self._generated_tokens = generated_tokens
+
     def on_prefill_start(self) -> None:
         if torch.cuda.is_available():
             self._memory_tracker.reset_peak()
-        self._prefill_start = time.perf_counter()
+        self._prefill_start = self._timestamp()
 
     def on_prefill_end(self) -> None:
-        self._prefill_end = time.perf_counter()
+        self._prefill_end = self._timestamp()
 
     def on_decode_start(self) -> None:
-        self._decode_start = time.perf_counter()
+        self._decode_start = self._timestamp()
 
-    def on_decode_token_end(self, token_index: int) -> None:
-        self._decode_token_times.append(time.perf_counter())
+    def on_decode_token_end(self, token_index: int, generated_tokens: int | None = None) -> None:
+        self._decode_token_times.append(self._timestamp())
+        if generated_tokens is not None:
+            self._generated_tokens = generated_tokens
 
     def on_layer_copy_start(self, layer_id: int) -> None:
-        self._layer_copy_start[layer_id] = time.perf_counter()
+        self._layer_copy_start[layer_id] = self._raw_timestamp()
 
     def on_layer_copy_end(self, layer_id: int) -> None:
         start = self._layer_copy_start.pop(layer_id, None)
         if start is not None:
-            elapsed = (time.perf_counter() - start) * 1000.0
+            elapsed = (self._timestamp() - start) * 1000.0
             self._layer_copy_totals[layer_id] = self._layer_copy_totals.get(layer_id, 0.0) + elapsed
 
     def on_layer_compute_start(self, layer_id: int) -> None:
-        self._layer_compute_start[layer_id] = time.perf_counter()
+        self._layer_compute_start[layer_id] = self._raw_timestamp()
 
     def on_layer_compute_end(self, layer_id: int) -> None:
         start = self._layer_compute_start.pop(layer_id, None)
         if start is not None:
-            elapsed = (time.perf_counter() - start) * 1000.0
+            elapsed = (self._timestamp() - start) * 1000.0
             self._layer_compute_totals[layer_id] = self._layer_compute_totals.get(layer_id, 0.0) + elapsed
 
     def get_summary(self) -> dict[str, float]:
@@ -62,9 +84,15 @@ class BenchmarkHarness:
             result["prefill_latency_ms"] = 0.0
             result["ttft_ms"] = 0.0
 
-        if self._decode_token_times and self._decode_start is not None:
-            decode_elapsed = self._decode_token_times[-1] - self._decode_start
-            result["decode_tokens_per_sec"] = len(self._decode_token_times) / decode_elapsed if decode_elapsed > 0 else 0.0
+        if (
+            self._generation_start is not None
+            and self._generation_end is not None
+            and self._prefill_end is not None
+            and self._generated_tokens > 1
+        ):
+            decode_elapsed = self._generation_end - self._prefill_end
+            decode_tokens = self._generated_tokens - 1
+            result["decode_tokens_per_sec"] = decode_tokens / decode_elapsed if decode_elapsed > 0 else 0.0
         else:
             result["decode_tokens_per_sec"] = 0.0
 

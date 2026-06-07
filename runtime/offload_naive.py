@@ -38,6 +38,29 @@ class NaiveOffloadWeightProvider:
 
         self._cpu_layer_cache: dict[int, LayerWeights] = {}
         self._gpu_layer_cache: dict[int, LayerWeights] = {}
+        pin_cpu_layers = self.device.type == "cuda"
+
+        for layer_id in model_bundle.loader.iter_layer_ids():
+            lw = model_bundle.loader.load_layer_weights(layer_id)
+            cpu_tensors = {
+                k: self._prepare_cpu_tensor(t, pin_memory=pin_cpu_layers)
+                for k, t in lw.tensors.items()
+            }
+            self._cpu_layer_cache[layer_id] = LayerWeights(
+                layer_id=layer_id,
+                tensors=cpu_tensors,
+            )
+
+    def _prepare_cpu_tensor(
+        self,
+        tensor: torch.Tensor,
+        *,
+        pin_memory: bool,
+    ) -> torch.Tensor:
+        cpu_tensor = tensor.contiguous()
+        if pin_memory:
+            cpu_tensor = cpu_tensor.pin_memory()
+        return cpu_tensor
 
     def get_global_weights(self) -> GlobalWeights:
         return self._global_weights
@@ -46,14 +69,13 @@ class NaiveOffloadWeightProvider:
         return None
 
     def synchronize_layer(self, layer_id: int) -> None:
+        if layer_id in self._gpu_layer_cache:
+            return None
+
         if self.benchmark is not None:
             self.benchmark.on_layer_copy_start(layer_id)
 
-        if layer_id not in self._cpu_layer_cache:
-            lw = self.model_bundle.loader.load_layer_weights(layer_id)
-            self._cpu_layer_cache[layer_id] = lw
-        else:
-            lw = self._cpu_layer_cache[layer_id]
+        lw = self._cpu_layer_cache[layer_id]
 
         gpu_tensors = {
             k: t.to(device=self.device, dtype=self.dtype, non_blocking=False)

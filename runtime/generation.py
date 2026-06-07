@@ -102,6 +102,9 @@ class GenerationRuntime:
             return input_ids
 
         prompt_len = input_ids.shape[1]
+        if self.benchmark is not None:
+            self.benchmark.on_generation_start()
+
         kv_cache = KVCache(
             config=self.config,
             batch_size=input_ids.shape[0],
@@ -121,7 +124,7 @@ class GenerationRuntime:
             generated = torch.cat([generated, next_token], dim=1)
 
             if self.benchmark is not None:
-                self.benchmark.on_decode_token_end(step)
+                self.benchmark.on_decode_token_end(step, generated_tokens=step + 1)
 
             if step == max_new_tokens - 1:
                 break
@@ -133,5 +136,8 @@ class GenerationRuntime:
                 dtype=torch.long,
             )
             logits = self.decode_one(next_token, next_position_id, kv_cache)
+
+        if self.benchmark is not None:
+            self.benchmark.on_generation_end(generated_tokens=max_new_tokens)
 
         return generated

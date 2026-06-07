@@ -108,6 +108,13 @@ class TestNaiveProviderGPU:
         provider = NaiveOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32)
         provider.close()
 
+    def test_cpu_cache_stays_resident_after_release(self, model_bundle):
+        provider = NaiveOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32)
+        assert len(provider._cpu_layer_cache) == model_bundle.config.num_hidden_layers
+        provider.synchronize_layer(0)
+        provider.release_layer(0)
+        assert 0 in provider._cpu_layer_cache
+
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
 class TestPrefetchProviderGPU:
@@ -141,8 +148,7 @@ class TestPrefetchProviderGPU:
         provider.prefetch_layer(0)
         provider.synchronize_layer(0)
         provider.release_layer(0)
-        with pytest.raises(KeyError):
-            provider.get_layer_weights(0)
+        assert 0 in provider._cpu_cache
 
     def test_close(self, model_bundle):
         provider = PrefetchOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32, gpu_layer_budget=2)
@@ -150,12 +156,12 @@ class TestPrefetchProviderGPU:
 
     def test_gpu_layer_budget_eviction(self, model_bundle):
         provider = PrefetchOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32, gpu_layer_budget=2)
-        # Prefetch 3 layers — budget=2 so the first should be evicted
         provider.prefetch_layer(0)
+        provider.synchronize_layer(0)
         provider.prefetch_layer(1)
-        provider.prefetch_layer(2)
-
         provider.synchronize_layer(1)
+        provider.release_layer(0)
+        provider.prefetch_layer(2)
         provider.synchronize_layer(2)
 
         assert provider.get_layer_weights(1).layer_id == 1
@@ -164,15 +170,23 @@ class TestPrefetchProviderGPU:
             provider.get_layer_weights(0)
 
     def test_gpu_layer_budget_none(self, model_bundle):
-        """No budget limit means all prefetched layers stay in GPU cache."""
         provider = PrefetchOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32, gpu_layer_budget=None)
-        for i in range(4):
-            provider.prefetch_layer(i)
-        for i in range(4):
-            provider.synchronize_layer(i)
         for i in range(4):
             lw = provider.get_layer_weights(i)
             assert lw.layer_id == i
+
+    def test_budget_one_never_exceeds_gpu_cache(self, model_bundle):
+        provider = PrefetchOffloadWeightProvider(model_bundle, torch.device("cuda"), torch.float32, gpu_layer_budget=1)
+        provider.prefetch_layer(0)
+        provider.synchronize_layer(0)
+        assert len(provider._gpu_cache) == 1
+
+        provider.prefetch_layer(1)
+        assert len(provider._gpu_cache) == 1
+        provider.release_layer(0)
+        provider.synchronize_layer(1)
+        assert len(provider._gpu_cache) == 1
+        assert provider.get_layer_weights(1).layer_id == 1
 
 
 class TestProviderCPU:

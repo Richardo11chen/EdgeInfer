@@ -29,10 +29,14 @@ class TestPrefillTiming:
 class TestDecodeTiming:
     def test_simple(self):
         bm = BenchmarkHarness()
+        bm.on_generation_start()
+        bm.on_prefill_start()
+        bm.on_prefill_end()
         bm.on_decode_start()
-        bm.on_decode_token_end(0)
+        bm.on_decode_token_end(0, generated_tokens=1)
         time.sleep(0.01)
-        bm.on_decode_token_end(1)
+        bm.on_decode_token_end(1, generated_tokens=2)
+        bm.on_generation_end(generated_tokens=2)
         s = bm.get_summary()
         assert s["decode_tokens_per_sec"] > 0
 
@@ -43,10 +47,12 @@ class TestDecodeTiming:
 
     def test_single_token(self):
         bm = BenchmarkHarness()
+        bm.on_generation_start()
         bm.on_decode_start()
-        bm.on_decode_token_end(0)
+        bm.on_decode_token_end(0, generated_tokens=1)
+        bm.on_generation_end(generated_tokens=1)
         s = bm.get_summary()
-        assert s["decode_tokens_per_sec"] >= 0
+        assert s["decode_tokens_per_sec"] == 0.0
 
 
 class TestLayerCopyTiming:
@@ -143,10 +149,12 @@ class TestExportCsv:
 
     def test_header_and_structure(self, tmp_path):
         bm = BenchmarkHarness()
+        bm.on_generation_start()
         bm.on_prefill_start()
         bm.on_prefill_end()
         bm.on_decode_start()
-        bm.on_decode_token_end(0)
+        bm.on_decode_token_end(0, generated_tokens=1)
+        bm.on_generation_end(generated_tokens=1)
         bm.on_layer_copy_start(0)
         bm.on_layer_copy_end(0)
         bm.on_layer_compute_start(0)
@@ -186,6 +194,7 @@ class TestExportCsv:
 class TestFullWorkflow:
     def test_prefill_decode_workflow(self):
         bm = BenchmarkHarness()
+        bm.on_generation_start()
         bm.on_prefill_start()
         for i in range(4):
             bm.on_layer_copy_start(i)
@@ -201,7 +210,8 @@ class TestFullWorkflow:
                 bm.on_layer_copy_end(i)
                 bm.on_layer_compute_start(i)
                 bm.on_layer_compute_end(i)
-            bm.on_decode_token_end(t)
+            bm.on_decode_token_end(t, generated_tokens=t + 1)
+        bm.on_generation_end(generated_tokens=5)
 
         s = bm.get_summary()
         assert s["prefill_latency_ms"] > 0
